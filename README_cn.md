@@ -165,7 +165,7 @@ x[k+1] = A x[k] + B u[k] + f
 
 所以结论是：**当前实现是标称线性 MPC，不显式建模不确定性；它靠高频闭环重求解提供一定抗扰能力。若要有鲁棒性，应在外部做模型裕度、约束收紧、扰动估计或 tube MPC 设计，再把处理后的 nominal 问题交给 TinyMPC 求解。**
 
-# 代码改进
+# 代码改进建议
 
 有，而且我认为**改进空间不小**。如果目标只是跑桌面示例，当前代码够用；但如果目标是稳定部署到微控制器，建议先处理下面这些点。
 
@@ -239,3 +239,37 @@ x[k+1] = A x[k] + B u[k] + f
    `std::cout`、动态 Eigen、运行时矩阵尺寸、`max_iter` 不同情况下的时间上界，都需要整理。MCU 上最好能给出固定 worst-case 执行时间和固定 RAM 用量。
 
 我的判断：**算法思路是对的，桌面 demo 也能跑，但当前工程实现离“可靠 MCU 部署库”还有距离。** 最该先修的是 codegen 和静态内存模型，这两个直接决定能不能稳妥部署。
+
+# 代码改进
+
+已按我前面判断先修最关键的 codegen 部署链路。
+
+改动集中在：
+
+- [src/tinympc/codegen.cpp](D:/Code/TinyMPC/src/tinympc/codegen.cpp)：把生成代码从“按结构体字段顺序聚合初始化”改成“按字段名赋值初始化”，避免 `types.hpp` 字段变化后生成代码编译失败。
+- [src/tinympc/tiny_api.cpp](D:/Code/TinyMPC/src/tinympc/tiny_api.cpp)：在 `tiny_setup()` 里初始化 cone / linear / time-varying linear 约束计数和空矩阵，避免 codegen 读取未初始化字段。
+- [tinympc_generated_code_cartpole_example](D:/Code/TinyMPC/tinympc_generated_code_cartpole_example)：重新生成了已跟踪的 cartpole codegen 示例。
+
+具体修复点：
+
+- 生成的 `TinyCache` 现在包含 `APf`、`BPf`、`C1`、`C2`、sensitivity matrices，不再和结构体错位。
+- 生成的 `TinySettings` 现在包含所有设置项，包括 SOC、linear、TV-linear、adaptive rho 参数。
+- 生成的 `TinyWorkspace` 现在包含 `fdyn`、约束元数据、cone/linear slack/dual 变量等完整字段。
+- `tiny_data.hpp` 改为包含 `<tinympc/types.hpp>`。
+- 生成代码新增 `tiny_init_generated_data()`，示例 `tiny_main.cpp` 会显式调用；同时保留默认自动初始化。若 MCU 不希望 C++ 静态构造，可定义 `TINYMPC_DISABLE_AUTOINIT`，然后手动调用初始化函数。
+
+验证已通过：
+
+```text
+cmake --build build --config Release
+codegen_cartpole.exe
+codegen_random.exe
+generated_cartpole_check.exe
+generated_random_check.exe
+generated_cartpole_no_autoinit_check.exe
+cartpole_example.exe
+```
+
+其中生成的 cartpole/random 代码都已能独立编译、链接核心库并运行 `tiny_solve()` 成功。
+
+剩下更大的 MCU 优化还没做：把 Eigen 动态矩阵进一步替换成固定尺寸/静态内存模型。这是下一阶段改造，范围会明显更大。

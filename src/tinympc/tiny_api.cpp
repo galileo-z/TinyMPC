@@ -94,6 +94,15 @@ int tiny_setup(TinySolver** solverp,
     work->gc = tinyMatrix::Zero(nx, N);
     work->yc = tinyMatrix::Zero(nu, N-1);
 
+    work->numStateCones = 0;
+    work->numInputCones = 0;
+    work->cx = tinyVector::Zero(0);
+    work->cu = tinyVector::Zero(0);
+    work->Acx = VectorXi::Zero(0);
+    work->Acu = VectorXi::Zero(0);
+    work->qcx = VectorXi::Zero(0);
+    work->qcu = VectorXi::Zero(0);
+
     // Linear constraint slack variables
     work->vl = tinyMatrix::Zero(nx, N);
     work->vlnew = tinyMatrix::Zero(nx, N);
@@ -104,6 +113,13 @@ int tiny_setup(TinySolver** solverp,
     work->gl = tinyMatrix::Zero(nx, N);
     work->yl = tinyMatrix::Zero(nu, N-1);
 
+    work->numStateLinear = 0;
+    work->numInputLinear = 0;
+    work->Alin_x = tinyMatrix::Zero(0, nx);
+    work->blin_x = tinyVector::Zero(0);
+    work->Alin_u = tinyMatrix::Zero(0, nu);
+    work->blin_u = tinyVector::Zero(0);
+
     // Time-varying Linear constraint slack variables
     work->vl_tv = tinyMatrix::Zero(nx, N);
     work->vlnew_tv = tinyMatrix::Zero(nx, N);
@@ -113,6 +129,13 @@ int tiny_setup(TinySolver** solverp,
     // Time-varying Linear constraint dual variables
     work->gl_tv = tinyMatrix::Zero(nx, N);
     work->yl_tv = tinyMatrix::Zero(nu, N-1);
+
+    work->numtvStateLinear = 0;
+    work->numtvInputLinear = 0;
+    work->tv_Alin_x = tinyMatrix::Zero(0, nx);
+    work->tv_blin_x = tinyMatrix::Zero(0, N);
+    work->tv_Alin_u = tinyMatrix::Zero(0, nu);
+    work->tv_blin_u = tinyMatrix::Zero(0, N-1);
 
     work->Q = (Q + rho * tinyMatrix::Identity(nx, nx)).diagonal();
     work->R = (R + rho * tinyMatrix::Identity(nu, nu)).diagonal();

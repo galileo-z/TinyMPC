@@ -30,11 +30,9 @@ extern "C" {
 
 using namespace Eigen;
 
-static void print_matrix(FILE *f, MatrixXd mat, int num_elements)
+static void print_matrix_values(FILE *f, const MatrixXd& mat, int num_elements)
 {
-    // Check if matrix is uninitialized or too small
-    if (mat.size() == 0 || mat.size() < num_elements) {
-        // Print zeros for all elements
+    if (mat.size() < num_elements) {
         for (int i = 0; i < num_elements; i++) {
             fprintf(f, "(tinytype)0.0000000000000000");
             if (i < num_elements - 1)
@@ -42,13 +40,84 @@ static void print_matrix(FILE *f, MatrixXd mat, int num_elements)
         }
         return;
     }
-    
-    // Matrix is properly initialized and has enough elements
+
     for (int i = 0; i < num_elements; i++) {
         fprintf(f, "(tinytype)%.16f", mat.reshaped<RowMajor>()[i]);
         if (i < num_elements - 1)
             fprintf(f, ",");
     }
+}
+
+static void print_tiny_matrix_expr(FILE *f, const MatrixXd& mat, int rows, int cols)
+{
+    if (rows == 0 || cols == 0) {
+        fprintf(f, "tinyMatrix::Zero(%d, %d)", rows, cols);
+        return;
+    }
+
+    fprintf(f, "(tinyMatrix(%d, %d) << ", rows, cols);
+    print_matrix_values(f, mat, rows * cols);
+    fprintf(f, ").finished()");
+}
+
+static void print_tiny_vector_expr(FILE *f, const MatrixXd& vec, int rows)
+{
+    if (rows == 0) {
+        fprintf(f, "tinyVector::Zero(0)");
+        return;
+    }
+
+    fprintf(f, "(tinyVector(%d) << ", rows);
+    print_matrix_values(f, vec, rows);
+    fprintf(f, ").finished()");
+}
+
+static void print_vectorxi_expr(FILE *f, const VectorXi& vec, int rows)
+{
+    if (rows == 0) {
+        fprintf(f, "VectorXi::Zero(0)");
+        return;
+    }
+
+    fprintf(f, "(VectorXi(%d) << ", rows);
+    for (int i = 0; i < rows; i++) {
+        int value = i < vec.size() ? vec(i) : 0;
+        fprintf(f, "%d", value);
+        if (i < rows - 1)
+            fprintf(f, ",");
+    }
+    fprintf(f, ").finished()");
+}
+
+static void write_matrix_assignment(FILE *f, const char* target, const MatrixXd& mat, int rows, int cols)
+{
+    fprintf(f, "\t%s = ", target);
+    print_tiny_matrix_expr(f, mat, rows, cols);
+    fprintf(f, ";\n");
+}
+
+static void write_vector_assignment(FILE *f, const char* target, const MatrixXd& vec, int rows)
+{
+    fprintf(f, "\t%s = ", target);
+    print_tiny_vector_expr(f, vec, rows);
+    fprintf(f, ";\n");
+}
+
+static void write_vectorxi_assignment(FILE *f, const char* target, const VectorXi& vec, int rows)
+{
+    fprintf(f, "\t%s = ", target);
+    print_vectorxi_expr(f, vec, rows);
+    fprintf(f, ";\n");
+}
+
+static int matrix_rows_or(const MatrixXd& mat, int fallback)
+{
+    return mat.size() == 0 ? fallback : mat.rows();
+}
+
+static int matrix_cols_or(const MatrixXd& mat, int fallback)
+{
+    return mat.size() == 0 ? fallback : mat.cols();
 }
 
 
@@ -145,13 +214,14 @@ int codegen_data_header(const char* output_dir, int verbose) {
 
     fprintf(data_hpp_f, "#pragma once\n\n");
 
-    fprintf(data_hpp_f, "#include \"types.hpp\"\n\n");
+    fprintf(data_hpp_f, "#include <tinympc/types.hpp>\n\n");
 
     fprintf(data_hpp_f, "#ifdef __cplusplus\n");
     fprintf(data_hpp_f, "extern \"C\" {\n");
     fprintf(data_hpp_f, "#endif\n\n");
 
-    fprintf(data_hpp_f, "extern TinySolver tiny_solver;\n\n");
+    fprintf(data_hpp_f, "extern TinySolver tiny_solver;\n");
+    fprintf(data_hpp_f, "void tiny_init_generated_data(void);\n\n");
 
     fprintf(data_hpp_f, "#ifdef __cplusplus\n");
     fprintf(data_hpp_f, "}\n");
@@ -194,182 +264,176 @@ int codegen_data_source(TinySolver* solver, const char* output_dir, int verbose)
     fprintf(data_cpp_f, "#ifdef __cplusplus\n");
     fprintf(data_cpp_f, "extern \"C\" {\n");
     fprintf(data_cpp_f, "#endif\n\n");
-
-    // Solution
-    fprintf(data_cpp_f, "/* Solution */\n");
-    fprintf(data_cpp_f, "TinySolution solution = {\n");
-
-    fprintf(data_cpp_f, "\t%d,\t\t// iter\n", solver->solution->iter);
-    fprintf(data_cpp_f, "\t%d,\t\t// solved\n", solver->solution->solved);
-    fprintf(data_cpp_f, "\t(tinyMatrix(%d, %d) << ", nx, N);
-    print_matrix(data_cpp_f, MatrixXd::Zero(nx, N), nx * N);
-    fprintf(data_cpp_f, ").finished(),\t// x\n"); // x solution
-    fprintf(data_cpp_f, "\t(tinyMatrix(%d, %d) << ", nu, N-1);
-    print_matrix(data_cpp_f, MatrixXd::Zero(nu, N-1), nu * (N-1));
-    fprintf(data_cpp_f, ").finished(),\t// x\n"); // u solution
-
-    fprintf(data_cpp_f, "};\n\n");
-
-    // Cache
-    fprintf(data_cpp_f, "/* Matrices that must be recomputed with changes in time step, rho */\n");
-    fprintf(data_cpp_f, "TinyCache cache = {\n");
-
-    fprintf(data_cpp_f, "\t(tinytype)%.16f,\t// rho (step size/penalty)\n", solver->cache->rho);
-    fprintf(data_cpp_f, "\t(tinyMatrix(%d, %d) << ", nu, nx);
-    print_matrix(data_cpp_f, solver->cache->Kinf, nu * nx);
-    fprintf(data_cpp_f, ").finished(),\t// Kinf\n"); // Kinf
-    fprintf(data_cpp_f, "\t(tinyMatrix(%d, %d) << ", nx, nx);
-    print_matrix(data_cpp_f, solver->cache->Pinf, nx * nx);
-    fprintf(data_cpp_f, ").finished(),\t// Pinf\n"); // Pinf
-    fprintf(data_cpp_f, "\t(tinyMatrix(%d, %d) << ", nu, nu);
-    print_matrix(data_cpp_f, solver->cache->Quu_inv, nu * nu);
-    fprintf(data_cpp_f, ").finished(),\t// Quu_inv\n"); // Quu_inv
-    fprintf(data_cpp_f, "\t(tinyMatrix(%d, %d) << ", nx, nx);
-    print_matrix(data_cpp_f, solver->cache->AmBKt, nx * nx);
-    fprintf(data_cpp_f, ").finished(),\t// AmBKt\n"); // AmBKt
-    fprintf(data_cpp_f, "\t(tinyMatrix(%d, %d) << ", nx, nx);
-    print_matrix(data_cpp_f, solver->cache->C1, nx * nx);
-    fprintf(data_cpp_f, ").finished(),\t// C1\n"); // C1
-    fprintf(data_cpp_f, "\t(tinyMatrix(%d, %d) << ", nx, nx);
-    print_matrix(data_cpp_f, solver->cache->C2, nx * nx);
-    fprintf(data_cpp_f, ").finished()"); // C2, no comma if no sensitivity matrices
-
-    // Only print sensitivity matrices if adaptive rho is enabled
-    if (solver->settings->adaptive_rho) {
-        fprintf(data_cpp_f, ",\t// C2\n"); // Add comma and comment for C2 if we have more matrices
-        
-        // Add sensitivity matrices within the struct initialization
-        fprintf(data_cpp_f, "\t(tinyMatrix(%d, %d) << ", nu, nx);
-        print_matrix(data_cpp_f, solver->cache->dKinf_drho, nu * nx);
-        fprintf(data_cpp_f, ").finished(),\t// dKinf_drho\n"); // dKinf_drho
-        fprintf(data_cpp_f, "\t(tinyMatrix(%d, %d) << ", nx, nx);
-        print_matrix(data_cpp_f, solver->cache->dPinf_drho, nx * nx);
-        fprintf(data_cpp_f, ").finished(),\t// dPinf_drho\n"); // dPinf_drho
-        fprintf(data_cpp_f, "\t(tinyMatrix(%d, %d) << ", nx, nx);
-        print_matrix(data_cpp_f, solver->cache->dC1_drho, nx * nx);
-        fprintf(data_cpp_f, ").finished(),\t// dC1_drho\n"); // dC1_drho
-        fprintf(data_cpp_f, "\t(tinyMatrix(%d, %d) << ", nx, nx);
-        print_matrix(data_cpp_f, solver->cache->dC2_drho, nx * nx);
-        fprintf(data_cpp_f, ").finished()\t// dC2_drho\n"); // dC2_drho
-    } else {
-        fprintf(data_cpp_f, "\t// C2\n"); // Just add comment for C2
-    }
-
-    fprintf(data_cpp_f, "};\n\n");
-
-    // Settings
-    fprintf(data_cpp_f, "/* User settings */\n");
-    fprintf(data_cpp_f, "TinySettings settings = {\n");
-
-    fprintf(data_cpp_f, "\t(tinytype)%.16f,\t// primal tolerance\n", solver->settings->abs_pri_tol);
-    fprintf(data_cpp_f, "\t(tinytype)%.16f,\t// dual tolerance\n", solver->settings->abs_dua_tol);
-    fprintf(data_cpp_f, "\t%d,\t\t// max iterations\n", solver->settings->max_iter);
-    fprintf(data_cpp_f, "\t%d,\t\t// iterations per termination check\n", solver->settings->check_termination);
-    fprintf(data_cpp_f, "\t%d,\t\t// enable state constraints\n", solver->settings->en_state_bound);
-    fprintf(data_cpp_f, "\t%d\t\t// enable input constraints\n", solver->settings->en_input_bound);
-
-    fprintf(data_cpp_f, "};\n\n");
-
-    // Workspace
-    fprintf(data_cpp_f, "/* Problem variables */\n");
-    fprintf(data_cpp_f, "TinyWorkspace work = {\n");
-
-    fprintf(data_cpp_f, "\t%d,\t// Number of states\n", nx);
-    fprintf(data_cpp_f, "\t%d,\t// Number of control inputs\n", nu);
-    fprintf(data_cpp_f, "\t%d,\t// Number of knotpoints in the horizon\n", N);
-
-    fprintf(data_cpp_f, "\t(tinyMatrix(%d, %d) << ", nx, N);
-    print_matrix(data_cpp_f, MatrixXd::Zero(nx, N), nx * N);
-    fprintf(data_cpp_f, ").finished(),\t// x\n"); // x
-    fprintf(data_cpp_f, "\t(tinyMatrix(%d, %d) << ", nu, N-1);
-    print_matrix(data_cpp_f, MatrixXd::Zero(nu, N - 1), nu * (N-1));
-    fprintf(data_cpp_f, ").finished(),\t// u\n"); // u
-
-    fprintf(data_cpp_f, "\t(tinyMatrix(%d, %d) << ", nx, N);
-    print_matrix(data_cpp_f, MatrixXd::Zero(nx, N), nx * N);
-    fprintf(data_cpp_f, ").finished(),\t// q\n"); // q
-    fprintf(data_cpp_f, "\t(tinyMatrix(%d, %d) << ", nu, N-1);
-    print_matrix(data_cpp_f, MatrixXd::Zero(nu, N - 1), nu * (N-1));
-    fprintf(data_cpp_f, ").finished(),\t// r\n"); // r
-
-    fprintf(data_cpp_f, "\t(tinyMatrix(%d, %d) << ", nx, N);
-    print_matrix(data_cpp_f, MatrixXd::Zero(nx, N), nx * N);
-    fprintf(data_cpp_f, ").finished(),\t// p\n"); // p
-    fprintf(data_cpp_f, "\t(tinyMatrix(%d, %d) << ", nu, N-1);
-    print_matrix(data_cpp_f, MatrixXd::Zero(nu, N - 1), nu * (N-1));
-    fprintf(data_cpp_f, ").finished(),\t// d\n"); // d
-
-    fprintf(data_cpp_f, "\t(tinyMatrix(%d, %d) << ", nx, N);
-    print_matrix(data_cpp_f, MatrixXd::Zero(nx, N), nx * N);
-    fprintf(data_cpp_f, ").finished(),\t// v\n"); // v
-    fprintf(data_cpp_f, "\t(tinyMatrix(%d, %d) << ", nx, N);
-    print_matrix(data_cpp_f, MatrixXd::Zero(nx, N), nx * N);
-    fprintf(data_cpp_f, ").finished(),\t// vnew\n"); // vnew
-    fprintf(data_cpp_f, "\t(tinyMatrix(%d, %d) << ", nu, N-1);
-    print_matrix(data_cpp_f, MatrixXd::Zero(nu, N - 1), nu * (N-1));
-    fprintf(data_cpp_f, ").finished(),\t// z\n"); // z
-    fprintf(data_cpp_f, "\t(tinyMatrix(%d, %d) << ", nu, N-1);
-    print_matrix(data_cpp_f, MatrixXd::Zero(nu, N - 1), nu * (N-1));
-    fprintf(data_cpp_f, ").finished(),\t// znew\n"); // znew
-
-    fprintf(data_cpp_f, "\t(tinyMatrix(%d, %d) << ", nx, N);
-    print_matrix(data_cpp_f, MatrixXd::Zero(nx, N), nx * N);
-    fprintf(data_cpp_f, ").finished(),\t// g\n"); // g
-    fprintf(data_cpp_f, "\t(tinyMatrix(%d, %d) << ", nu, N-1);
-    print_matrix(data_cpp_f, MatrixXd::Zero(nu, N - 1), nu * (N-1));
-    fprintf(data_cpp_f, ").finished(),\t// y\n"); // y
-
-    fprintf(data_cpp_f, "\t(tinyVector(%d) << ", nx);
-    print_matrix(data_cpp_f, solver->work->Q, nx);
-    fprintf(data_cpp_f, ").finished(),\t// Q\n"); // Q
-    fprintf(data_cpp_f, "\t(tinyVector(%d) << ", nu);
-    print_matrix(data_cpp_f, solver->work->R, nu);
-    fprintf(data_cpp_f, ").finished(),\t// R\n"); // R
-    fprintf(data_cpp_f, "\t(tinyMatrix(%d, %d) << ", nx, nx);
-    print_matrix(data_cpp_f, solver->work->Adyn, nx * nx);
-    fprintf(data_cpp_f, ").finished(),\t// Adyn\n"); // Adyn
-    fprintf(data_cpp_f, "\t(tinyMatrix(%d, %d) << ", nx, nu);
-    print_matrix(data_cpp_f, solver->work->Bdyn, nx * nu);
-    fprintf(data_cpp_f, ").finished(),\t// Bdyn\n"); // Bdyn
-
-    fprintf(data_cpp_f, "\t(tinyMatrix(%d, %d) << ", nx, N);
-    print_matrix(data_cpp_f, solver->work->x_min, nx * N);
-    fprintf(data_cpp_f, ").finished(),\t// x_min\n"); // x_min
-    fprintf(data_cpp_f, "\t(tinyMatrix(%d, %d) << ", nx, N);
-    print_matrix(data_cpp_f, solver->work->x_max, nx * N);
-    fprintf(data_cpp_f, ").finished(),\t// x_max\n"); // x_max
-    fprintf(data_cpp_f, "\t(tinyMatrix(%d, %d) << ", nu, N-1);
-    print_matrix(data_cpp_f, solver->work->u_min, nu * (N-1));
-    fprintf(data_cpp_f, ").finished(),\t// u_min\n"); // u_min
-    fprintf(data_cpp_f, "\t(tinyMatrix(%d, %d) << ", nu, N-1);
-    print_matrix(data_cpp_f, solver->work->u_max, nu * (N-1));
-    fprintf(data_cpp_f, ").finished(),\t// u_max\n"); // u_max
-    
-    fprintf(data_cpp_f, "\t(tinyMatrix(%d, %d) << ", nx, N);
-    print_matrix(data_cpp_f, MatrixXd::Zero(nx, N), nx * N);
-    fprintf(data_cpp_f, ").finished(),\t// Xref\n"); // Xref
-    fprintf(data_cpp_f, "\t(tinyMatrix(%d, %d) << ", nu, N-1);
-    print_matrix(data_cpp_f, MatrixXd::Zero(nu, N - 1), nu * (N-1));
-    fprintf(data_cpp_f, ").finished(),\t// Uref\n"); // Uref
-
-    fprintf(data_cpp_f, "\t(tinyVector(%d) << ", nu);
-    print_matrix(data_cpp_f, MatrixXd::Zero(nu, 1), nu);
-    fprintf(data_cpp_f, ").finished(),\t// Qu\n"); // Qu
-
-    fprintf(data_cpp_f, "\t(tinytype)%.16f,\t// state primal residual\n", 0.0);
-    fprintf(data_cpp_f, "\t(tinytype)%.16f,\t// input primal residual\n", 0.0);
-    fprintf(data_cpp_f, "\t(tinytype)%.16f,\t// state dual residual\n", 0.0);
-    fprintf(data_cpp_f, "\t(tinytype)%.16f,\t// input dual residual\n", 0.0);
-    fprintf(data_cpp_f, "\t%d,\t// solve status\n", 0);
-    fprintf(data_cpp_f, "\t%d,\t// solve iteration\n", 0);
-
-    fprintf(data_cpp_f, "};\n\n");
-
-    // Write solver struct definition to workspace file
+    fprintf(data_cpp_f, "TinySolution solution;\n");
+    fprintf(data_cpp_f, "TinyCache cache;\n");
+    fprintf(data_cpp_f, "TinySettings settings;\n");
+    fprintf(data_cpp_f, "TinyWorkspace work;\n");
     fprintf(data_cpp_f, "TinySolver tiny_solver = {&solution, &settings, &cache, &work};\n\n");
 
-    // Close extern C
+    fprintf(data_cpp_f, "void tiny_init_generated_data(void)\n");
+    fprintf(data_cpp_f, "{\n");
+
+    fprintf(data_cpp_f, "\t/* Solution */\n");
+    fprintf(data_cpp_f, "\tsolution.iter = %d;\n", solver->solution->iter);
+    fprintf(data_cpp_f, "\tsolution.solved = %d;\n", solver->solution->solved);
+    write_matrix_assignment(data_cpp_f, "solution.x", MatrixXd::Zero(nx, N), nx, N);
+    write_matrix_assignment(data_cpp_f, "solution.u", MatrixXd::Zero(nu, N - 1), nu, N - 1);
+    fprintf(data_cpp_f, "\n");
+
+    int c1_rows = matrix_rows_or(solver->cache->C1, nu);
+    int c1_cols = matrix_cols_or(solver->cache->C1, nu);
+    int c2_rows = matrix_rows_or(solver->cache->C2, nx);
+    int c2_cols = matrix_cols_or(solver->cache->C2, nx);
+    int dC1_rows = matrix_rows_or(solver->cache->dC1_drho, c1_rows);
+    int dC1_cols = matrix_cols_or(solver->cache->dC1_drho, c1_cols);
+    int dC2_rows = matrix_rows_or(solver->cache->dC2_drho, c2_rows);
+    int dC2_cols = matrix_cols_or(solver->cache->dC2_drho, c2_cols);
+
+    fprintf(data_cpp_f, "\t/* Cache */\n");
+    fprintf(data_cpp_f, "\tcache.rho = (tinytype)%.16f;\n", solver->cache->rho);
+    write_matrix_assignment(data_cpp_f, "cache.Kinf", solver->cache->Kinf, nu, nx);
+    write_matrix_assignment(data_cpp_f, "cache.Pinf", solver->cache->Pinf, nx, nx);
+    write_matrix_assignment(data_cpp_f, "cache.Quu_inv", solver->cache->Quu_inv, nu, nu);
+    write_matrix_assignment(data_cpp_f, "cache.AmBKt", solver->cache->AmBKt, nx, nx);
+    write_vector_assignment(data_cpp_f, "cache.APf", solver->cache->APf, nx);
+    write_vector_assignment(data_cpp_f, "cache.BPf", solver->cache->BPf, nu);
+    write_matrix_assignment(data_cpp_f, "cache.C1", solver->cache->C1, c1_rows, c1_cols);
+    write_matrix_assignment(data_cpp_f, "cache.C2", solver->cache->C2, c2_rows, c2_cols);
+    write_matrix_assignment(data_cpp_f, "cache.dKinf_drho", solver->cache->dKinf_drho, nu, nx);
+    write_matrix_assignment(data_cpp_f, "cache.dPinf_drho", solver->cache->dPinf_drho, nx, nx);
+    write_matrix_assignment(data_cpp_f, "cache.dC1_drho", solver->cache->dC1_drho, dC1_rows, dC1_cols);
+    write_matrix_assignment(data_cpp_f, "cache.dC2_drho", solver->cache->dC2_drho, dC2_rows, dC2_cols);
+    fprintf(data_cpp_f, "\n");
+
+    fprintf(data_cpp_f, "\t/* Settings */\n");
+    fprintf(data_cpp_f, "\tsettings.abs_pri_tol = (tinytype)%.16f;\n", solver->settings->abs_pri_tol);
+    fprintf(data_cpp_f, "\tsettings.abs_dua_tol = (tinytype)%.16f;\n", solver->settings->abs_dua_tol);
+    fprintf(data_cpp_f, "\tsettings.max_iter = %d;\n", solver->settings->max_iter);
+    fprintf(data_cpp_f, "\tsettings.check_termination = %d;\n", solver->settings->check_termination);
+    fprintf(data_cpp_f, "\tsettings.en_state_bound = %d;\n", solver->settings->en_state_bound);
+    fprintf(data_cpp_f, "\tsettings.en_input_bound = %d;\n", solver->settings->en_input_bound);
+    fprintf(data_cpp_f, "\tsettings.en_state_soc = %d;\n", solver->settings->en_state_soc);
+    fprintf(data_cpp_f, "\tsettings.en_input_soc = %d;\n", solver->settings->en_input_soc);
+    fprintf(data_cpp_f, "\tsettings.en_state_linear = %d;\n", solver->settings->en_state_linear);
+    fprintf(data_cpp_f, "\tsettings.en_input_linear = %d;\n", solver->settings->en_input_linear);
+    fprintf(data_cpp_f, "\tsettings.en_tv_state_linear = %d;\n", solver->settings->en_tv_state_linear);
+    fprintf(data_cpp_f, "\tsettings.en_tv_input_linear = %d;\n", solver->settings->en_tv_input_linear);
+    fprintf(data_cpp_f, "\tsettings.adaptive_rho = %d;\n", solver->settings->adaptive_rho);
+    fprintf(data_cpp_f, "\tsettings.adaptive_rho_min = (tinytype)%.16f;\n", solver->settings->adaptive_rho_min);
+    fprintf(data_cpp_f, "\tsettings.adaptive_rho_max = (tinytype)%.16f;\n", solver->settings->adaptive_rho_max);
+    fprintf(data_cpp_f, "\tsettings.adaptive_rho_enable_clipping = %d;\n", solver->settings->adaptive_rho_enable_clipping);
+    fprintf(data_cpp_f, "\n");
+
+    int num_state_cones = solver->work->numStateCones;
+    int num_input_cones = solver->work->numInputCones;
+    int num_state_linear = solver->work->numStateLinear;
+    int num_input_linear = solver->work->numInputLinear;
+    int num_tv_state_linear = solver->work->numtvStateLinear;
+    int num_tv_input_linear = solver->work->numtvInputLinear;
+
+    int alin_x_rows = matrix_rows_or(solver->work->Alin_x, num_state_linear);
+    int alin_x_cols = matrix_cols_or(solver->work->Alin_x, nx);
+    int alin_u_rows = matrix_rows_or(solver->work->Alin_u, num_input_linear);
+    int alin_u_cols = matrix_cols_or(solver->work->Alin_u, nu);
+    int tv_alin_x_rows = matrix_rows_or(solver->work->tv_Alin_x, num_tv_state_linear * N);
+    int tv_alin_x_cols = matrix_cols_or(solver->work->tv_Alin_x, nx);
+    int tv_blin_x_rows = matrix_rows_or(solver->work->tv_blin_x, num_tv_state_linear);
+    int tv_blin_x_cols = matrix_cols_or(solver->work->tv_blin_x, N);
+    int tv_alin_u_rows = matrix_rows_or(solver->work->tv_Alin_u, num_tv_input_linear * (N - 1));
+    int tv_alin_u_cols = matrix_cols_or(solver->work->tv_Alin_u, nu);
+    int tv_blin_u_rows = matrix_rows_or(solver->work->tv_blin_u, num_tv_input_linear);
+    int tv_blin_u_cols = matrix_cols_or(solver->work->tv_blin_u, N - 1);
+
+    fprintf(data_cpp_f, "\t/* Workspace */\n");
+    fprintf(data_cpp_f, "\twork.nx = %d;\n", nx);
+    fprintf(data_cpp_f, "\twork.nu = %d;\n", nu);
+    fprintf(data_cpp_f, "\twork.N = %d;\n", N);
+    write_matrix_assignment(data_cpp_f, "work.x", MatrixXd::Zero(nx, N), nx, N);
+    write_matrix_assignment(data_cpp_f, "work.u", MatrixXd::Zero(nu, N - 1), nu, N - 1);
+    write_matrix_assignment(data_cpp_f, "work.q", MatrixXd::Zero(nx, N), nx, N);
+    write_matrix_assignment(data_cpp_f, "work.r", MatrixXd::Zero(nu, N - 1), nu, N - 1);
+    write_matrix_assignment(data_cpp_f, "work.p", MatrixXd::Zero(nx, N), nx, N);
+    write_matrix_assignment(data_cpp_f, "work.d", MatrixXd::Zero(nu, N - 1), nu, N - 1);
+    write_matrix_assignment(data_cpp_f, "work.v", MatrixXd::Zero(nx, N), nx, N);
+    write_matrix_assignment(data_cpp_f, "work.vnew", MatrixXd::Zero(nx, N), nx, N);
+    write_matrix_assignment(data_cpp_f, "work.z", MatrixXd::Zero(nu, N - 1), nu, N - 1);
+    write_matrix_assignment(data_cpp_f, "work.znew", MatrixXd::Zero(nu, N - 1), nu, N - 1);
+    write_matrix_assignment(data_cpp_f, "work.g", MatrixXd::Zero(nx, N), nx, N);
+    write_matrix_assignment(data_cpp_f, "work.y", MatrixXd::Zero(nu, N - 1), nu, N - 1);
+    write_matrix_assignment(data_cpp_f, "work.x_min", solver->work->x_min, nx, N);
+    write_matrix_assignment(data_cpp_f, "work.x_max", solver->work->x_max, nx, N);
+    write_matrix_assignment(data_cpp_f, "work.u_min", solver->work->u_min, nu, N - 1);
+    write_matrix_assignment(data_cpp_f, "work.u_max", solver->work->u_max, nu, N - 1);
+
+    fprintf(data_cpp_f, "\twork.numStateCones = %d;\n", num_state_cones);
+    fprintf(data_cpp_f, "\twork.numInputCones = %d;\n", num_input_cones);
+    write_vector_assignment(data_cpp_f, "work.cx", solver->work->cx, num_state_cones);
+    write_vector_assignment(data_cpp_f, "work.cu", solver->work->cu, num_input_cones);
+    write_vectorxi_assignment(data_cpp_f, "work.Acx", solver->work->Acx, num_state_cones);
+    write_vectorxi_assignment(data_cpp_f, "work.Acu", solver->work->Acu, num_input_cones);
+    write_vectorxi_assignment(data_cpp_f, "work.qcx", solver->work->qcx, num_state_cones);
+    write_vectorxi_assignment(data_cpp_f, "work.qcu", solver->work->qcu, num_input_cones);
+
+    write_matrix_assignment(data_cpp_f, "work.vc", MatrixXd::Zero(nx, N), nx, N);
+    write_matrix_assignment(data_cpp_f, "work.vcnew", MatrixXd::Zero(nx, N), nx, N);
+    write_matrix_assignment(data_cpp_f, "work.zc", MatrixXd::Zero(nu, N - 1), nu, N - 1);
+    write_matrix_assignment(data_cpp_f, "work.zcnew", MatrixXd::Zero(nu, N - 1), nu, N - 1);
+    write_matrix_assignment(data_cpp_f, "work.gc", MatrixXd::Zero(nx, N), nx, N);
+    write_matrix_assignment(data_cpp_f, "work.yc", MatrixXd::Zero(nu, N - 1), nu, N - 1);
+
+    fprintf(data_cpp_f, "\twork.numStateLinear = %d;\n", num_state_linear);
+    fprintf(data_cpp_f, "\twork.numInputLinear = %d;\n", num_input_linear);
+    write_matrix_assignment(data_cpp_f, "work.Alin_x", solver->work->Alin_x, alin_x_rows, alin_x_cols);
+    write_vector_assignment(data_cpp_f, "work.blin_x", solver->work->blin_x, num_state_linear);
+    write_matrix_assignment(data_cpp_f, "work.Alin_u", solver->work->Alin_u, alin_u_rows, alin_u_cols);
+    write_vector_assignment(data_cpp_f, "work.blin_u", solver->work->blin_u, num_input_linear);
+    write_matrix_assignment(data_cpp_f, "work.vl", MatrixXd::Zero(nx, N), nx, N);
+    write_matrix_assignment(data_cpp_f, "work.vlnew", MatrixXd::Zero(nx, N), nx, N);
+    write_matrix_assignment(data_cpp_f, "work.zl", MatrixXd::Zero(nu, N - 1), nu, N - 1);
+    write_matrix_assignment(data_cpp_f, "work.zlnew", MatrixXd::Zero(nu, N - 1), nu, N - 1);
+    write_matrix_assignment(data_cpp_f, "work.gl", MatrixXd::Zero(nx, N), nx, N);
+    write_matrix_assignment(data_cpp_f, "work.yl", MatrixXd::Zero(nu, N - 1), nu, N - 1);
+
+    fprintf(data_cpp_f, "\twork.numtvStateLinear = %d;\n", num_tv_state_linear);
+    fprintf(data_cpp_f, "\twork.numtvInputLinear = %d;\n", num_tv_input_linear);
+    write_matrix_assignment(data_cpp_f, "work.tv_Alin_x", solver->work->tv_Alin_x, tv_alin_x_rows, tv_alin_x_cols);
+    write_matrix_assignment(data_cpp_f, "work.tv_blin_x", solver->work->tv_blin_x, tv_blin_x_rows, tv_blin_x_cols);
+    write_matrix_assignment(data_cpp_f, "work.tv_Alin_u", solver->work->tv_Alin_u, tv_alin_u_rows, tv_alin_u_cols);
+    write_matrix_assignment(data_cpp_f, "work.tv_blin_u", solver->work->tv_blin_u, tv_blin_u_rows, tv_blin_u_cols);
+    write_matrix_assignment(data_cpp_f, "work.vl_tv", MatrixXd::Zero(nx, N), nx, N);
+    write_matrix_assignment(data_cpp_f, "work.vlnew_tv", MatrixXd::Zero(nx, N), nx, N);
+    write_matrix_assignment(data_cpp_f, "work.zl_tv", MatrixXd::Zero(nu, N - 1), nu, N - 1);
+    write_matrix_assignment(data_cpp_f, "work.zlnew_tv", MatrixXd::Zero(nu, N - 1), nu, N - 1);
+    write_matrix_assignment(data_cpp_f, "work.gl_tv", MatrixXd::Zero(nx, N), nx, N);
+    write_matrix_assignment(data_cpp_f, "work.yl_tv", MatrixXd::Zero(nu, N - 1), nu, N - 1);
+
+    write_vector_assignment(data_cpp_f, "work.Q", solver->work->Q, nx);
+    write_vector_assignment(data_cpp_f, "work.R", solver->work->R, nu);
+    write_matrix_assignment(data_cpp_f, "work.Adyn", solver->work->Adyn, nx, nx);
+    write_matrix_assignment(data_cpp_f, "work.Bdyn", solver->work->Bdyn, nx, nu);
+    write_vector_assignment(data_cpp_f, "work.fdyn", solver->work->fdyn, nx);
+    write_matrix_assignment(data_cpp_f, "work.Xref", MatrixXd::Zero(nx, N), nx, N);
+    write_matrix_assignment(data_cpp_f, "work.Uref", MatrixXd::Zero(nu, N - 1), nu, N - 1);
+    write_vector_assignment(data_cpp_f, "work.Qu", MatrixXd::Zero(nu, 1), nu);
+    fprintf(data_cpp_f, "\twork.primal_residual_state = (tinytype)0.0000000000000000;\n");
+    fprintf(data_cpp_f, "\twork.primal_residual_input = (tinytype)0.0000000000000000;\n");
+    fprintf(data_cpp_f, "\twork.dual_residual_state = (tinytype)0.0000000000000000;\n");
+    fprintf(data_cpp_f, "\twork.dual_residual_input = (tinytype)0.0000000000000000;\n");
+    fprintf(data_cpp_f, "\twork.status = 0;\n");
+    fprintf(data_cpp_f, "\twork.iter = 0;\n");
+
+    fprintf(data_cpp_f, "}\n\n");
+
     fprintf(data_cpp_f, "#ifdef __cplusplus\n");
+    fprintf(data_cpp_f, "}\n");
+    fprintf(data_cpp_f, "#endif\n\n");
+
+    fprintf(data_cpp_f, "#ifndef TINYMPC_DISABLE_AUTOINIT\n");
+    fprintf(data_cpp_f, "namespace {\n");
+    fprintf(data_cpp_f, "struct TinyGeneratedDataAutoinit {\n");
+    fprintf(data_cpp_f, "\tTinyGeneratedDataAutoinit() { tiny_init_generated_data(); }\n");
+    fprintf(data_cpp_f, "};\n");
+    fprintf(data_cpp_f, "TinyGeneratedDataAutoinit tiny_generated_data_autoinit;\n");
     fprintf(data_cpp_f, "}\n");
     fprintf(data_cpp_f, "#endif\n\n");
 
@@ -414,6 +478,7 @@ int codegen_example(const char* output_dir, int verbose) {
     fprintf(example_cpp_f, "int main()\n");
     fprintf(example_cpp_f, "{\n");
     fprintf(example_cpp_f, "\tint exitflag = 1;\n");
+    fprintf(example_cpp_f, "\ttiny_init_generated_data();\n");
     fprintf(example_cpp_f, "\t// Double check some data\n");
     fprintf(example_cpp_f, "\tstd::cout << \"rho: \" << tiny_solver.cache->rho << std::endl;\n");
     fprintf(example_cpp_f, "\tstd::cout << \"\\nmax iters: \" << tiny_solver.settings->max_iter << std::endl;\n");
